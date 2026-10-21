@@ -50,8 +50,9 @@ async function ensureDemoSeedTable(db) {
 async function recordSeed(db, tenantId, tableName, rowId) {
   if (rowId == null) return;
   await db.run(
-    `INSERT OR IGNORE INTO demo_seeds (tenant_id, table_name, row_id, created_at)
-     VALUES (?, ?, ?, ?)`,
+    `INSERT INTO demo_seeds (tenant_id, table_name, row_id, created_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT DO NOTHING`,
     tenantId,
     tableName,
     rowId,
@@ -294,9 +295,11 @@ async function ensureStudents(db, tenantId, classroomId, count = 6) {
       ? membershipRow.id
       : `member-${crypto.randomBytes(8).toString("hex")}`;
     await db.run(
-      `INSERT OR REPLACE INTO class_memberships
+      `INSERT INTO class_memberships
          (id, tenant_id, class_id, student_id, status, requested_at, approved_at)
-       VALUES (?, ?, ?, ?, 'approved', ?, ?)`,
+       VALUES (?, ?, ?, ?, 'approved', ?, ?)
+       ON CONFLICT (class_id, student_id) DO UPDATE SET id = excluded.id, tenant_id = excluded.tenant_id,
+         status = excluded.status, requested_at = excluded.requested_at, approved_at = excluded.approved_at`,
       membershipId,
       tenantId,
       classroomId,
@@ -638,7 +641,7 @@ async function seedEvaluationRun(db, opts) {
   // Human score (for AI-vs-human research metrics).
   if (opts.humanScore !== undefined) {
     await db.run(
-      `INSERT OR REPLACE INTO evaluation_human_scores
+      `INSERT INTO evaluation_human_scores
          (run_id, human_score, human_feedback, reviewed_at, reviewer_id)
        VALUES (?, ?, ?, ?, ?)`,
       runId,
@@ -905,7 +908,7 @@ async function seedDemoData(auth, target) {
         ? Math.max(1, Math.min(100, aiScore + (Math.random() < 0.5 ? -1 : 1)))
         : Math.max(1, Math.min(100, aiScore + (Math.random() < 0.5 ? -12 : 12)));
       await db.run(
-        `INSERT OR REPLACE INTO evaluation_human_scores
+        `INSERT INTO evaluation_human_scores
            (run_id, human_score, human_feedback, reviewed_at, reviewer_id)
          VALUES (?, ?, ?, ?, ?)`,
         runId,

@@ -4,8 +4,22 @@ const SUBMISSION_FETCH_LIMIT = 500;
 const ATTEMPT_EVALUATION_LEASE_MS = 15 * 60 * 1000;
 const { assessmentSnapshotHash, rubricHash, answersHash, hashObject } = require("../security/assessment-integrity");
 const crypto = require("node:crypto");
+const { isForeignKeyViolation } = require("./client");
 
 function randomId(prefix) { return `${prefix}_${crypto.randomUUID().replace(/-/g, "")}`; }
+
+// PostgreSQL has no json_set for TEXT payloads, so the JSON is changed in
+// application code under a row lock instead of in SQL.
+async function updatePayloadInTransaction(db, whereClauses, whereArgs, mutate) {
+  const where = whereClauses.join(" AND ");
+  return db.transaction(async (tx) => {
+    const row = await tx.get(`SELECT payload FROM submissions WHERE ${where} FOR UPDATE`, ...whereArgs);
+    if (!row) return { changes: 0 };
+    const payload = JSON.parse(row.payload);
+    mutate(payload);
+    return tx.run(`UPDATE submissions SET payload = ? WHERE ${where}`, JSON.stringify(payload), ...whereArgs);
+  });
+}
 
 function attemptError(message, status = 400, code = null) {
   const error = Object.assign(new Error(message), { status });
@@ -50,7 +64,7 @@ async function getCanonicalAssessmentForStudent(db, tenantId, userId, assessment
        JOIN class_memberships cm ON cm.class_id = ac.class_id
         AND cm.tenant_id = ac.tenant_id AND cm.student_id = ? AND cm.status = 'approved'
       WHERE ac.tenant_id = ? AND ac.assessment_id = ? AND ac.status = 'published'
-        AND (? IS NULL OR ac.class_id = ?)
+        AND (CAST(? AS TEXT) IS NULL OR ac.class_id = ?)
       ORDER BY ac.class_id LIMIT 1`,
     userId, tenantId, assessmentId, requestedClassId || null, requestedClassId || null,
   );
@@ -256,7 +270,7 @@ async function assertCanSubmitAssessment(db, tenantId, userId, assessmentId, req
      JOIN class_memberships cm ON cm.class_id = ac.class_id
        AND cm.tenant_id = ac.tenant_id AND cm.student_id = ? AND cm.status = 'approved'
      WHERE ac.tenant_id = ? AND ac.assessment_id = ? AND ac.status = 'published'
-       AND (? IS NULL OR ac.class_id = ?)
+       AND (CAST(? AS TEXT) IS NULL OR ac.class_id = ?)
      ORDER BY ac.class_id
      LIMIT 1`,
     userId, tenantId, assessmentId, requestedClassId || null, requestedClassId || null,
@@ -275,13 +289,16 @@ async function saveSubmission(db, tenantId, userId, submission, bypassCheck = fa
     const classId = await assertCanSubmitAssessment(db, tenantId, userId, submission.assessmentId, submission.classId || null);
     if (classId) submission = { ...submission, classId };
   }
-  const insert = (assessmentId) => db.run(`INSERT OR REPLACE INTO submissions (id, tenant_id, assessment_id, student_name, user_id, final_score, payload, submitted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, submission.id, tenantId, assessmentId, submission.studentName, userId, submission.finalScore, JSON.stringify(submission), submission.submittedAt);
+  // Upsert keeps the attempt binding columns (attempt_id, hashes,
+  // evaluation_status) that INSERT OR REPLACE used to reset to NULL on re-save.
+  const insert = (assessmentId) => db.run(`INSERT INTO submissions (id, tenant_id, assessment_id, student_name, user_id, final_score, payload, submitted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO UPDATE SET tenant_id = excluded.tenant_id, assessment_id = excluded.assessment_id,
+         student_name = excluded.student_name, user_id = excluded.user_id, final_score = excluded.final_score,
+         payload = excluded.payload, submitted_at = excluded.submitted_at`, submission.id, tenantId, assessmentId, submission.studentName, userId, submission.finalScore, JSON.stringify(submission), submission.submittedAt);
   try { await insert(submission.assessmentId); }
   catch (err) {
-    const msg = String(err.message || err);
-    const isForeignKey = msg.includes("FOREIGN KEY constraint failed") || msg.includes("SQLITE_CONSTRAINT_FOREIGNKEY");
-    if (!isForeignKey) throw err;
+    if (!isForeignKeyViolation(err)) throw err;
     // Only a submission that never referenced an assessment may fall back to a
     // NULL assessment_id. A provided-but-missing assessment must not silently
     // create an orphan row that bypasses attempt limits and teacher queries.
@@ -298,7 +315,7 @@ async function saveSubmission(db, tenantId, userId, submission, bypassCheck = fa
 async function getVisibleSubmissions(db, auth) {
   if (auth.user.role === "student") return db.all("SELECT payload FROM submissions WHERE tenant_id = ? AND user_id = ? ORDER BY submitted_at ASC", auth.tenant.id, auth.user.id);
   if (auth.user.role === "teacher") return db.all(`SELECT s.payload FROM (SELECT s.payload, s.submitted_at FROM submissions s JOIN assessments a ON a.id = s.assessment_id WHERE s.tenant_id = ? AND a.tenant_id = ? AND a.teacher_id = ? ORDER BY s.submitted_at DESC LIMIT ${SUBMISSION_FETCH_LIMIT}) s ORDER BY s.submitted_at ASC`, auth.tenant.id, auth.tenant.id, auth.user.id);
-  return db.all(`SELECT payload FROM (SELECT payload, submitted_at FROM submissions WHERE tenant_id = ? ORDER BY submitted_at DESC LIMIT ${SUBMISSION_FETCH_LIMIT}) ORDER BY submitted_at ASC`, auth.tenant.id);
+  return db.all(`SELECT payload FROM (SELECT payload, submitted_at FROM submissions WHERE tenant_id = ? ORDER BY submitted_at DESC LIMIT ${SUBMISSION_FETCH_LIMIT}) s ORDER BY submitted_at ASC`, auth.tenant.id);
 }
 
 async function getSubmissionDetail(db, auth, submissionId) {
@@ -364,6 +381,20 @@ async function updateSubmissionAudio(db, tenantId, submissionId, { index, kind }
     clauses.push("user_id = ?");
     args.push(options.userId);
   }
+  if (db.dialect === "postgres") {
+    const result = await updatePayloadInTransaction(db, clauses, args, (payload) => {
+      const entry = payload?.questionScores?.[Number(index)];
+      if (!entry || typeof entry !== "object") return;
+      if (kind === "probing") {
+        const probing = entry.probing && typeof entry.probing === "object" ? entry.probing : {};
+        entry.probing = { ...probing, audio };
+      } else {
+        entry.audio = audio;
+      }
+    });
+    if (!result.changes) throw Object.assign(new Error("Submission tidak ditemukan"), { status: 404 });
+    return;
+  }
   let sql;
   let params;
   if (kind === "probing") {
@@ -379,6 +410,16 @@ async function updateSubmissionAudio(db, tenantId, submissionId, { index, kind }
 }
 
 async function updateSubmissionFeedback(db, tenantId, submissionId, fields) {
+  if (db.dialect === "postgres") {
+    const result = await updatePayloadInTransaction(db, ["id = ?", "tenant_id = ?"], [submissionId, tenantId], (payload) => {
+      payload.evidenceFeedback = fields.evidenceFeedback ?? null;
+      payload.evidenceQuality = fields.evidenceQuality ?? null;
+      payload.competencyState = fields.competencyState ?? null;
+      payload.scoreState = fields.scoreState ?? null;
+    });
+    if (!result.changes) throw Object.assign(new Error("Submission tidak ditemukan"), { status: 404 });
+    return;
+  }
   const result = await db.run(
     `UPDATE submissions SET payload = json_set(payload, '$.evidenceFeedback', json(?), '$.evidenceQuality', json(?), '$.competencyState', json(?), '$.scoreState', ?) WHERE id = ? AND tenant_id = ?`,
     JSON.stringify(fields.evidenceFeedback),

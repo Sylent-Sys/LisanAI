@@ -32,8 +32,9 @@ async function main() {
 
   await db.run("UPDATE classes SET teacher_id = ? WHERE id = ?", teacher.id, demoClass.id);
   await db.run(
-    `INSERT OR IGNORE INTO class_memberships (id, tenant_id, class_id, student_id, status, requested_at, approved_at)
-     VALUES (?, ?, ?, ?, 'approved', ?, ?)`,
+    `INSERT INTO class_memberships (id, tenant_id, class_id, student_id, status, requested_at, approved_at)
+     VALUES (?, ?, ?, ?, 'approved', ?, ?)
+     ON CONFLICT DO NOTHING`,
     `showcase-${demoClass.id}-${student.id}`, tenantId, demoClass.id, student.id,
     new Date().toISOString(), new Date().toISOString()
   );

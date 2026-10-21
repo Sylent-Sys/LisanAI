@@ -90,9 +90,12 @@ async function materializeSubmission(db, tenantId, studentId, submission) {
     const history = [...filtered, record].sort((a, b) => Date.parse(a.submittedAt || "") - Date.parse(b.submittedAt || "")).slice(-30);
     const trajectory = buildLearningOutcomeTrajectory(record.learningOutcomeId, record.learningOutcome, history);
     await db.run(
-      `INSERT OR REPLACE INTO student_competency_state
+      `INSERT INTO student_competency_state
        (tenant_id, student_id, learning_outcome_id, learning_outcome, latest_score, latest_submitted_at, snapshot_count, history, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (tenant_id, student_id, learning_outcome_id, learning_outcome) DO UPDATE SET
+         latest_score = excluded.latest_score, latest_submitted_at = excluded.latest_submitted_at,
+         snapshot_count = excluded.snapshot_count, history = excluded.history, updated_at = excluded.updated_at`,
       tenantId, studentId, record.learningOutcomeId, record.learningOutcome,
       trajectory.latest?.score ?? 0, trajectory.latest?.submittedAt || record.submittedAt || null,
       Number(existing?.snapshot_count || 0) + (existing && filtered.length < previous.length ? 0 : 1),

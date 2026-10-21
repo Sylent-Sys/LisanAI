@@ -141,9 +141,10 @@ async function provision() {
   for (const classroom of classes) {
     await db.run("UPDATE classes SET teacher_id = ? WHERE id = ? AND tenant_id = ?", teacher.id, classroom.id, tenantId);
     await db.run(
-      `INSERT OR IGNORE INTO class_memberships
+      `INSERT INTO class_memberships
        (id, tenant_id, class_id, student_id, status, requested_at, approved_at)
-       VALUES (?, ?, ?, ?, 'approved', ?, ?)`,
+       VALUES (?, ?, ?, ?, 'approved', ?, ?)
+       ON CONFLICT DO NOTHING`,
       uid("showcase-membership"), tenantId, classroom.id, student.id,
       new Date().toISOString(), new Date().toISOString()
     );

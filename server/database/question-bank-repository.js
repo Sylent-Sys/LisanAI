@@ -18,7 +18,8 @@ async function saveQuestionToBank(db, auth, question) {
 async function listQuestionBank(db, auth, filter = {}) {
   const { topic, difficulty } = filter; let sql = "SELECT * FROM question_bank WHERE tenant_id = ? AND teacher_id = ?";
   const params = [auth.tenant.id, auth.user.id];
-  if (topic) { sql += " AND topic LIKE ?"; params.push(`%${topic}%`); }
+  // LOWER() on both sides: SQLite LIKE ignores ASCII case, PostgreSQL LIKE does not.
+  if (topic) { sql += " AND LOWER(topic) LIKE LOWER(?)"; params.push(`%${topic}%`); }
   if (difficulty) { sql += " AND difficulty = ?"; params.push(difficulty); }
   sql += " ORDER BY created_at DESC";
   const rows = await db.all(sql, ...params);

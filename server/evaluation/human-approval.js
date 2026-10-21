@@ -29,9 +29,10 @@ async function queueForApproval({ runId, tenantId, finalScore }) {
   const createdAt = nowIso();
   const deadline = new Date(Date.now() + APPROVAL_WINDOW_MS).toISOString();
   await db.run(
-    `INSERT OR IGNORE INTO human_approvals
+    `INSERT INTO human_approvals
        (run_id, tenant_id, final_score, approval_status, deadline_at, created_at)
-     VALUES (?, ?, ?, 'pending', ?, ?)`,
+     VALUES (?, ?, ?, 'pending', ?, ?)
+     ON CONFLICT DO NOTHING`,
     runId,
     tenantId || null,
     finalScore ?? null,
@@ -99,7 +100,8 @@ async function approveRun({ runId, reviewerId, humanScore, humanFeedback }) {
 async function saveHumanScoreInternal({ runId, humanScore, humanFeedback, reviewerId, reviewedAt }) {
   const db = getDb();
   await db.run(
-    `INSERT OR REPLACE INTO evaluation_human_scores
+    // Appends a row, as INSERT OR REPLACE did (the only unique key is the id).
+    `INSERT INTO evaluation_human_scores
        (run_id, human_score, human_feedback, reviewed_at, reviewer_id)
      VALUES (?, ?, ?, ?, ?)`,
     runId,
@@ -223,8 +225,8 @@ async function listApprovals({ tenantId, assessmentId, sweep = true } = {}) {
        FROM human_approvals a
        LEFT JOIN evaluation_human_scores h ON h.run_id = a.run_id
        LEFT JOIN evaluation_runs r ON r.run_id = a.run_id
-      WHERE ($1 IS NULL OR a.tenant_id = $1)
-        AND ($2 IS NULL OR r.assessment_id = $2)
+      WHERE (CAST($1 AS TEXT) IS NULL OR a.tenant_id = $1)
+        AND (CAST($2 AS TEXT) IS NULL OR r.assessment_id = $2)
       ORDER BY a.deadline_at ASC`,
     tenantId || null,
     assessmentId || null

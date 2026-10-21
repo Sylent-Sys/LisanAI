@@ -183,7 +183,7 @@ test("AI gateway saves retry_count, cost_usd, and estimated_prefix_cache_savings
     `SELECT retry_count, cost_usd, estimated_prefix_cache_savings, cache_read_input_tokens, cache_creation_input_tokens
      FROM ai_logs
      WHERE tenant_id = ? AND action = ? AND status = 'success'
-     ORDER BY datetime(created_at) ASC`,
+     ORDER BY created_at ASC`,
     "tenant-telemetry",
     "generate-questions"
   );
@@ -230,7 +230,7 @@ test("AI gateway captures native_tokens_cached as the KV cache hit count", async
     `SELECT cache_read_input_tokens, cache_creation_input_tokens
      FROM ai_logs
      WHERE tenant_id = ? AND action = ?
-     ORDER BY datetime(created_at) DESC LIMIT 1`,
+     ORDER BY created_at DESC LIMIT 1`,
     "tenant-native-cache",
     "generate-questions"
   );

@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const { EventEmitter } = require("node:events");
+const { Readable } = require("node:stream");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -133,7 +133,9 @@ async function seedScenario() {
 }
 
 function callHandler(handler, { method, url, body, headers = {} }) {
-  const req = new EventEmitter();
+  // A readable stream buffers the body until the handler reads it, like a real
+  // IncomingMessage; a timed emit raced handlers that query the DB first.
+  const req = Readable.from(body ? [Buffer.from(JSON.stringify(body))] : []);
   req.method = method;
   req.url = url;
   req.headers = { host: "127.0.0.1:4173", ...headers };
@@ -155,9 +157,5 @@ function callHandler(handler, { method, url, body, headers = {} }) {
 
   const done = new Promise((resolve) => { res.resolve = resolve; });
   handler(req, res);
-  setTimeout(() => {
-    if (body) req.emit("data", Buffer.from(JSON.stringify(body)));
-    req.emit("end");
-  }, 15);
   return done;
 }

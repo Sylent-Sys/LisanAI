@@ -8,7 +8,10 @@
     "dev": "node scripts/build.js && node local-server.js",
     "start-local": "node scripts/build.js && node local-server.js",
     "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "test:postgres": "node scripts/test-postgres.js",
     "migrate:status": "node scripts/migrate-status.js",
+    "db:pg-bootstrap": "node scripts/pg-bootstrap.js",
+    "db:sqlite-to-postgres": "node scripts/migrate-sqlite-to-postgres.js",
     "test:e2e": "node scripts/build.js && playwright test",
     "test:e2e:openrouter": "node scripts/run-e2e-openrouter.js",
     "seed:showcase": "node scripts/provision-showcase-demo.js",
@@ -21,6 +24,7 @@
   "description": "",
   "dependencies": {
     "@libsql/client": "^0.17.3",
+    "pg": "^8.23.1",
     "sqlite": "^5.1.1",
     "sqlite3": "^6.0.1"
   },

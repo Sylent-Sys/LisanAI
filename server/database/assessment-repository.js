@@ -91,8 +91,13 @@ async function saveAssessment(db, auth, assessment) {
   validateAssessmentIntegrity(assessment);
   const primaryClassId = classIds[0];
   const payload = { ...assessment, classId: primaryClassId, classIds };
-  await db.run(`INSERT OR REPLACE INTO assessments (id, tenant_id, class_id, teacher_id, status, topic, difficulty, payload, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, payload.id, auth.tenant.id, primaryClassId, auth.user.id,
+  // Upsert instead of INSERT OR REPLACE: REPLACE deletes the old row first,
+  // which cascaded to the assessment's attempts and submissions.
+  await db.run(`INSERT INTO assessments (id, tenant_id, class_id, teacher_id, status, topic, difficulty, payload, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (id) DO UPDATE SET tenant_id = excluded.tenant_id, class_id = excluded.class_id,
+       teacher_id = excluded.teacher_id, status = excluded.status, topic = excluded.topic,
+       difficulty = excluded.difficulty, payload = excluded.payload, created_at = excluded.created_at`, payload.id, auth.tenant.id, primaryClassId, auth.user.id,
     payload.status || "published", payload.topic, payload.difficulty, JSON.stringify(payload), payload.createdAt);
   await syncAssessmentClasses(db, auth.tenant.id, payload.id, classIds, payload.status || "published", payload.createdAt);
   return payload;
@@ -127,13 +132,19 @@ async function deleteAssessment(db, auth, assessmentId) {
 async function getVisibleAssessments(db, auth) {
   let rows;
   if (auth.user.role === "student") {
+    // EXISTS instead of SELECT DISTINCT: one row per assessment, and
+    // PostgreSQL rejects DISTINCT with an ORDER BY column outside the select list.
     rows = await db.all(
-      `SELECT DISTINCT a.payload
+      `SELECT a.payload
        FROM assessments a
-       JOIN assessment_classes ac ON ac.assessment_id = a.id AND ac.tenant_id = a.tenant_id
-       JOIN class_memberships cm ON cm.class_id = ac.class_id AND cm.tenant_id = ac.tenant_id
-       WHERE a.tenant_id = ? AND cm.student_id = ? AND cm.status = 'approved'
-         AND ac.status = 'published' AND COALESCE(a.status, 'published') = 'published'
+       WHERE a.tenant_id = ? AND COALESCE(a.status, 'published') = 'published'
+         AND EXISTS (
+           SELECT 1
+           FROM assessment_classes ac
+           JOIN class_memberships cm ON cm.class_id = ac.class_id AND cm.tenant_id = ac.tenant_id
+           WHERE ac.assessment_id = a.id AND ac.tenant_id = a.tenant_id
+             AND cm.student_id = ? AND cm.status = 'approved' AND ac.status = 'published'
+         )
        ORDER BY a.created_at DESC`,
       auth.tenant.id, auth.user.id,
     );

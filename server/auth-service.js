@@ -29,31 +29,29 @@ async function registerTenantUser({ tenantName, name, email, password }) {
   const existing = await database.get("SELECT id FROM users WHERE email = ?", user.email);
   if (existing) throw Object.assign(new Error("Email sudah terdaftar"), { status: 409 });
 
-  await database.run("BEGIN");
-  try {
-    await database.run(
+  const passwordHash = await hashPassword(password);
+  // transaction() pins one connection; with a PostgreSQL pool, separate
+  // BEGIN/COMMIT calls could land on different connections.
+  await database.transaction(async (tx) => {
+    await tx.run(
       "INSERT INTO tenants (id, name, plan, created_at) VALUES (?, ?, ?, ?)",
       tenant.id,
       tenant.name,
       tenant.plan,
       tenant.createdAt
     );
-    await database.run(
+    await tx.run(
       `INSERT INTO users (id, tenant_id, name, email, password_hash, role, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       user.id,
       user.tenantId,
       user.name,
       user.email,
-      await hashPassword(password),
+      passwordHash,
       user.role,
       user.createdAt
     );
-    await database.run("COMMIT");
-  } catch (error) {
-    await database.run("ROLLBACK");
-    throw error;
-  }
+  });
 
   return { tenant, user };
 }

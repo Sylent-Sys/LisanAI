@@ -1,3 +1,8 @@
+// A student has one membership row per class (UNIQUE class_id, student_id); a
+// new request or approval replaces its values, as INSERT OR REPLACE did.
+const MEMBERSHIP_UPSERT_SET = `id = excluded.id, tenant_id = excluded.tenant_id, status = excluded.status,
+      requested_at = excluded.requested_at, approved_at = excluded.approved_at`;
+
 async function createClass(db, tenantId, teacherId, classroom) {
   await db.run(`INSERT INTO classes (id, tenant_id, teacher_id, name, join_code, created_at) VALUES (?, ?, ?, ?, ?, ?)`, classroom.id, tenantId, teacherId, classroom.name, classroom.joinCode, classroom.createdAt);
   return classroom;
@@ -33,7 +38,8 @@ async function getVisibleClasses(db, auth) {
 async function requestJoinClass(db, tenantId, studentId, joinCode, membership) {
   const classroom = await db.get("SELECT * FROM classes WHERE tenant_id = ? AND join_code = ?", tenantId, joinCode);
   if (!classroom) throw Object.assign(new Error("Kode kelas tidak ditemukan"), { status: 404 });
-  await db.run(`INSERT OR REPLACE INTO class_memberships (id, tenant_id, class_id, student_id, status, requested_at, approved_at) VALUES (?, ?, ?, ?, 'pending', ?, NULL)`, membership.id, tenantId, classroom.id, studentId, membership.requestedAt);
+  await db.run(`INSERT INTO class_memberships (id, tenant_id, class_id, student_id, status, requested_at, approved_at) VALUES (?, ?, ?, ?, 'pending', ?, NULL)
+    ON CONFLICT (class_id, student_id) DO UPDATE SET ${MEMBERSHIP_UPSERT_SET}`, membership.id, tenantId, classroom.id, studentId, membership.requestedAt);
   return classroom;
 }
 
@@ -44,7 +50,8 @@ async function assertTeacherOwnsClass(db, tenantId, teacherId, classId) {
 }
 
 async function addApprovedStudent(db, tenantId, classId, studentId, membershipId, now) {
-  await db.run(`INSERT OR REPLACE INTO class_memberships (id, tenant_id, class_id, student_id, status, requested_at, approved_at) VALUES (?, ?, ?, ?, 'approved', ?, ?)`, membershipId, tenantId, classId, studentId, now, now);
+  await db.run(`INSERT INTO class_memberships (id, tenant_id, class_id, student_id, status, requested_at, approved_at) VALUES (?, ?, ?, ?, 'approved', ?, ?)
+    ON CONFLICT (class_id, student_id) DO UPDATE SET ${MEMBERSHIP_UPSERT_SET}`, membershipId, tenantId, classId, studentId, now, now);
 }
 
 async function clearData(db, tenantId) {
