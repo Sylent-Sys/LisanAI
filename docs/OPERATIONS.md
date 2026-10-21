@@ -62,6 +62,25 @@ Paket yang sama dipasang dengan `-Role` berbeda:
 - Uji suite terhadap PostgreSQL: `node --env-file=<pg-app.env> scripts/test-postgres.js`
   (setiap file test memakai skema sendiri yang dihapus setelahnya).
 
+### HTTPS di server web (tanpa domain)
+
+Node melayani HTTPS sendiri (`server/http/https-server.js`); tidak perlu nginx/IIS.
+Sertifikat diterbitkan Let's Encrypt untuk **alamat IP publik** dengan profil `shortlived`
+(berlaku ±6 hari) lewat Posh-ACME, dan diperpanjang otomatis.
+
+1. Uji alur validasi ke staging (tidak memasang apa pun):
+   `powershell -ExecutionPolicy Bypass -File .\deploy\windows\tls-ip-cert.ps1 -IpAddress <ip publik> -Server LE_STAGE`
+2. Terbitkan sertifikat sungguhan + task perpanjangan + firewall 443:
+   `powershell -ExecutionPolicy Bypass -File .\deploy\windows\tls-ip-cert.ps1 -IpAddress <ip publik> -Install`
+
+- Port 80 harus tetap terbuka: Let's Encrypt memvalidasi lewat HTTP-01 di port 80, dan port
+  80 juga mengalihkan pengunjung ke HTTPS.
+- Task `LisanAI-TLS-Renew` (SYSTEM) berjalan 03:17, 15:17, dan saat boot. Log:
+  `C:\apps\LisanAI\logs\tls-renew.log`. Karena masa berlaku hanya ±6 hari, periksa log ini bila
+  browser memperingatkan sertifikat kedaluwarsa.
+- Setelah HTTPS aktif, mikrofon di browser bisa dipakai (secure context) dan cookie sesi
+  otomatis bertanda `Secure`.
+
 ## Migrasi
 
 - Migrasi berjalan otomatis saat boot di dalam `initDatabase()`, dari `server/migrations/*.sql`.

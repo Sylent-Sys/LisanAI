@@ -1,4 +1,3 @@
-const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { PORT, ROOT, loadEnv } = require("./server/config");
@@ -7,6 +6,7 @@ const { sendJson } = require("./server/http-utils");
 const { applySecurityHeaders } = require("./server/security-headers");
 const { resolveApiHandlerPath } = require("./server/http/api-routes");
 const { createApiProxy } = require("./server/http/api-proxy");
+const { startServers } = require("./server/http/https-server");
 const { serveStaticFile } = require("./server/static");
 const pricing = require("./server/ai/pricing");
 
@@ -72,19 +72,31 @@ if (require.main === module) {
   // at require time, before .env is loaded. Default stays loopback-only.
   const host = process.env.HOST || "127.0.0.1";
   const port = Number(process.env.PORT) || PORT;
-  const server = http.createServer(requestHandler);
+  // HTTPS is optional: set HTTPS_PORT, TLS_CERT_FILE and TLS_KEY_FILE (and
+  // ACME_CHALLENGE_DIR when the certificate comes from an HTTP-01 ACME client).
+  const listen = () => {
+    const { httpServer } = startServers({
+      handler: requestHandler,
+      host,
+      httpPort: port,
+      httpsPort: Number(process.env.HTTPS_PORT) || 0,
+      certFile: process.env.TLS_CERT_FILE,
+      keyFile: process.env.TLS_KEY_FILE,
+      challengeDir: process.env.ACME_CHALLENGE_DIR,
+    });
+    return new Promise((resolve) => httpServer.on("listening", resolve));
+  };
   if (proxyApi) {
-    server.listen(port, host, () => {
+    listen().then(() => {
       console.log(`Lisan.ai web running at http://${host}:${port}`);
       console.log(`Proxying /api/* to ${new URL(process.env.API_UPSTREAM_URL).origin}`);
     });
   } else {
     initDatabase()
+      .then(listen)
       .then(() => {
-        server.listen(port, host, () => {
-          console.log(`Lisan.ai running at http://${host}:${port}`);
-          console.log(`Using OpenRouter model: ${process.env.OPENROUTER_MODEL}`);
-        });
+        console.log(`Lisan.ai running at http://${host}:${port}`);
+        console.log(`Using OpenRouter model: ${process.env.OPENROUTER_MODEL}`);
       })
       .catch((error) => {
         console.error("Gagal menyiapkan database:", error);
