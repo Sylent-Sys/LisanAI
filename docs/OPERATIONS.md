@@ -8,6 +8,37 @@ Panduan singkat untuk deploy, migrasi, backup, dan rollback.
 - CI (`.github/workflows/ci.yml`) menjalankan unit test, architecture check, dan E2E sebelum merge.
 - Jalankan `npm run check` dan `npm run build` secara lokal sebelum push.
 
+### Self-hosted (Windows Server)
+
+Satu proses Node (`local-server.js`) melayani frontend statis dan seluruh `/api/*`.
+Routing `/api/*` memakai `server/http/api-routes.js`, yang mengikuti rewrite di
+`vercel.json` (dijaga oleh `tests/api-routes.test.js`).
+
+1. Pasang Node.js 22 LTS (x64) di server.
+2. Salin paket release (zip berisi kode + `node_modules` produksi) ke server, lalu
+   `Unblock-File` dan `Expand-Archive`.
+3. Dari folder hasil ekstrak, di PowerShell **Administrator**:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\deploy\windows\deploy.ps1 -AllowFrom "<CIDR jaringan pengguna>"
+   ```
+
+   Run pertama membuat `C:\apps\LisanAI\shared\.env` (dengan `CSRF_SECRET` acak) lalu
+   berhenti. Isi `OPENROUTER_API_KEY`, kemudian jalankan perintah yang sama lagi.
+4. Skrip menyalin release ke `releases\<timestamp>`, mem-backup database ke
+   `shared\backups`, mengarahkan junction `current`, dan menjalankan scheduled task
+   `LisanAI` (akun `NETWORK SERVICE`, start saat boot, restart otomatis bila proses mati).
+   Bila health check gagal, junction dikembalikan ke release sebelumnya.
+
+Catatan:
+
+- Database berada di `shared\data\lisan_ai.db` (SQLite lokal) dan tidak tersentuh oleh redeploy.
+- `HOST`/`PORT` dibaca dari `.env`; default `local-server.js` tetap `127.0.0.1:4173`.
+- Perekaman mikrofon butuh secure context (HTTPS atau `localhost`). Lewat `http://<IP>`
+  browser memblokir mikrofon; jawaban ketik manual tetap berfungsi.
+- Log: `C:\apps\LisanAI\logs\app.log`. Rollback manual: hentikan task, arahkan ulang
+  junction `current` ke folder release lama (`cmd /c rmdir` lalu `mklink /J`), start task.
+
 ## Migrasi
 
 - Migrasi berjalan otomatis saat boot di dalam `initDatabase()`, dari `server/migrations/*.sql`.

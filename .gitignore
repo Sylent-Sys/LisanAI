@@ -8,3 +8,4 @@ server.err.log
 test-results/
 playwright-report/
 *.Zone.Identifier
+dist/
