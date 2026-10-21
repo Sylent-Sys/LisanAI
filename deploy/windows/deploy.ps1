@@ -1,12 +1,18 @@
 <#
 .SYNOPSIS
-  Deploy LisanAI (frontend + API in one Node process) to a Windows Server.
+  Deploy LisanAI to a Windows Server.
 
 .DESCRIPTION
   Run on the server from the extracted release package, in an elevated
   Windows PowerShell 5.1+ session:
 
-    powershell -ExecutionPolicy Bypass -File .\deploy\windows\deploy.ps1 -AllowFrom "<CIDR>"
+    powershell -ExecutionPolicy Bypass -File .\deploy\windows\deploy.ps1 -Role <full|api|web> -AllowFrom "<CIDR>"
+
+  Roles (they only change the first-run .env template, its validation and the
+  health check; the code package is the same):
+    full  frontend + API + database access in one process (default)
+    api   API server; DATABASE_URL points at PostgreSQL
+    web   frontend server; forwards /api/* to API_UPSTREAM_URL, holds no secrets
 
   Layout under -InstallDir:
     releases\<timestamp>\   one folder per deploy (last 3 kept)
@@ -21,6 +27,8 @@
   at boot. A failed health check rolls back to the previous release.
 #>
 param(
+  [ValidateSet("full", "api", "web")]
+  [string]$Role = "full",
   [string]$InstallDir = "C:\apps\LisanAI",
   [int]$Port = 4173,
   # Inbound firewall scope, e.g. "10.0.0.0/8,172.16.0.0/12". Empty = no rule.
@@ -101,23 +109,40 @@ function New-Secret {
 }
 
 function New-EnvFile {
-  $dbPath = (Join-Path $DataDir "lisan_ai.db") -replace "\\", "/"
-  $lines = @(
-    "# LisanAI server config. Berisi secret: jangan di-commit atau dibagikan.",
+  $header = @(
+    "# LisanAI server config ($Role). Berisi secret: jangan di-commit atau dibagikan.",
     "NODE_ENV=production",
     "HOST=0.0.0.0",
-    "PORT=$Port",
-    "TURSO_DATABASE_URL=file:$dbPath",
-    "TURSO_AUTH_TOKEN=",
-    "CSRF_SECRET=$(New-Secret)",
-    "HARNESS_PROVIDER=openrouter",
-    "MAX_EVALUATION_RETRIES=1",
-    "ENABLE_DEMO_SIMULATION=false",
-    "# Isi dengan API key OpenRouter milik project.",
-    "OPENROUTER_API_KEY=",
-    "OPENROUTER_MODEL=$(Get-ExampleValue 'OPENROUTER_MODEL')",
-    "OPENROUTER_FALLBACK_MODEL=$(Get-ExampleValue 'OPENROUTER_FALLBACK_MODEL')"
+    "PORT=$Port"
   )
+  if ($Role -eq "web") {
+    $lines = $header + @(
+      "# URL server API, mis. http://<ip-server-api>:4173",
+      "API_UPSTREAM_URL="
+    )
+  } else {
+    if ($Role -eq "api") {
+      $database = @(
+        "# postgres://<user>:<password>@<host>:5432/<database>",
+        "DATABASE_URL=",
+        "# disable | require (terenkripsi, sertifikat tidak diverifikasi) | verify",
+        "DATABASE_SSL=disable"
+      )
+    } else {
+      $dbPath = (Join-Path $DataDir "lisan_ai.db") -replace "\\", "/"
+      $database = @("TURSO_DATABASE_URL=file:$dbPath", "TURSO_AUTH_TOKEN=")
+    }
+    $lines = $header + $database + @(
+      "CSRF_SECRET=$(New-Secret)",
+      "HARNESS_PROVIDER=openrouter",
+      "MAX_EVALUATION_RETRIES=1",
+      "ENABLE_DEMO_SIMULATION=false",
+      "# Isi dengan API key OpenRouter milik project.",
+      "OPENROUTER_API_KEY=",
+      "OPENROUTER_MODEL=$(Get-ExampleValue 'OPENROUTER_MODEL')",
+      "OPENROUTER_FALLBACK_MODEL=$(Get-ExampleValue 'OPENROUTER_FALLBACK_MODEL')"
+    )
+  }
   Write-Utf8NoBom $EnvFile (($lines -join "`n") + "`n")
   Invoke-Native "icacls.exe" @($EnvFile, "/inheritance:r", "/grant:r", "${SidAdministrators}:(F)", "${SidSystem}:(F)", "${SidNetworkService}:(R)")
 }
@@ -145,9 +170,12 @@ function Set-CurrentRelease($target) {
 }
 
 function Test-AppHealthy($port) {
+  # The web role is checked on its own static page so an API outage does not
+  # roll back a good frontend release.
+  $path = if ($Role -eq "web") { "/" } else { "/api/auth?action=me" }
   for ($i = 0; $i -lt 30; $i++) {
     try {
-      $response = Invoke-WebRequest -Uri "http://127.0.0.1:$port/api/auth?action=me" -UseBasicParsing -TimeoutSec 5
+      $response = Invoke-WebRequest -Uri "http://127.0.0.1:$port$path" -UseBasicParsing -TimeoutSec 5
       if ($response.StatusCode -eq 200) { return $true }
     } catch { }
     Start-Sleep -Seconds 2
@@ -168,15 +196,22 @@ Invoke-Native "icacls.exe" @($DataDir, "/grant", "${SidNetworkService}:(OI)(CI)M
 Invoke-Native "icacls.exe" @($LogDir, "/grant", "${SidNetworkService}:(OI)(CI)M")
 
 if (-not (Test-Path $EnvFile)) {
-  Write-Step "Membuat $EnvFile (CSRF_SECRET dibuat acak)"
+  Write-Step "Membuat $EnvFile untuk role $Role"
   New-EnvFile
 }
 $EnvValues = Read-EnvFile $EnvFile
-$apiKey = [string]$EnvValues["OPENROUTER_API_KEY"]
-if ($EnvValues["HARNESS_PROVIDER"] -ne "mock" -and ($apiKey -eq "" -or $apiKey -like "sk-or-your-*")) {
+$missing = @()
+if ($Role -eq "web") {
+  if (-not $EnvValues["API_UPSTREAM_URL"]) { $missing += "API_UPSTREAM_URL" }
+} else {
+  $apiKey = [string]$EnvValues["OPENROUTER_API_KEY"]
+  if ($EnvValues["HARNESS_PROVIDER"] -ne "mock" -and ($apiKey -eq "" -or $apiKey -like "sk-or-your-*")) { $missing += "OPENROUTER_API_KEY" }
+  if ($Role -eq "api" -and ([string]$EnvValues["DATABASE_URL"]) -notmatch '^postgres(ql)?://') { $missing += "DATABASE_URL (postgres://...)" }
+}
+if ($missing.Count -gt 0) {
   Write-Host ""
-  Write-Host "OPENROUTER_API_KEY di $EnvFile masih kosong." -ForegroundColor Yellow
-  Write-Host "Isi nilainya (notepad `"$EnvFile`"), lalu jalankan skrip ini lagi." -ForegroundColor Yellow
+  Write-Host "Belum diisi di ${EnvFile}: $($missing -join ', ')" -ForegroundColor Yellow
+  Write-Host "Isi nilainya (notepad `"$EnvFile`" sebagai Administrator), lalu jalankan skrip ini lagi." -ForegroundColor Yellow
   exit 2
 }
 $AppPort = if ($EnvValues["PORT"]) { [int]$EnvValues["PORT"] } else { $Port }

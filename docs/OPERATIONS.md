@@ -39,6 +39,29 @@ Catatan:
 - Log: `C:\apps\LisanAI\logs\app.log`. Rollback manual: hentikan task, arahkan ulang
   junction `current` ke folder release lama (`cmd /c rmdir` lalu `mklink /J`), start task.
 
+### Self-hosted terpisah: web + API + PostgreSQL
+
+Paket yang sama dipasang dengan `-Role` berbeda:
+
+| Server | Role | Isi `.env` penting |
+|---|---|---|
+| Web (Apps) | `web` | `API_UPSTREAM_URL=http://<server-api>:4173`, tanpa secret |
+| API (AI) | `api` | `DATABASE_URL=postgres://...`, `CSRF_SECRET`, `OPENROUTER_API_KEY` |
+| DB | — | PostgreSQL; port 5432 hanya untuk server API |
+
+- Server web meneruskan `/api/*` ke server API (`server/http/api-proxy.js`) dan **menimpa**
+  `X-Forwarded-For` dengan IP pengunjung. Rate limit login di API mengandalkan header itu,
+  jadi port API harus hanya bisa diakses dari server web.
+- Siapkan role dan database sekali dengan kredensial admin dari file lokal (bukan argumen):
+  `node --env-file=<pg-admin.env> scripts/pg-bootstrap.js`. Skrip membuat role
+  `lisanai_app` (bukan superuser), database `lisanai` dan `lisanai_test`, lalu menulis URL
+  koneksinya ke `~/.lisanai/pg-app.env`.
+- Pindahkan data SQLite lama (hentikan aplikasi lama dulu):
+  `node --env-file=<api .env> scripts/migrate-sqlite-to-postgres.js --from=file:<path lisan_ai.db>`.
+  Skrip menolak database tujuan yang sudah berisi data dan memverifikasi jumlah baris per tabel.
+- Uji suite terhadap PostgreSQL: `node --env-file=<pg-app.env> scripts/test-postgres.js`
+  (setiap file test memakai skema sendiri yang dihapus setelahnya).
+
 ## Migrasi
 
 - Migrasi berjalan otomatis saat boot di dalam `initDatabase()`, dari `server/migrations/*.sql`.
@@ -53,6 +76,12 @@ Catatan:
 - Menambah migrasi baru: buat file bernomor, mis. `server/migrations/016_nama_fitur.sql`,
   dengan DDL idempoten (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`,
   `ALTER TABLE ... ADD COLUMN`).
+- PostgreSQL memakai `server/migrations/postgres/`: `022_postgres_baseline.sql` setara dengan
+  migrasi SQLite 001–022. **Setiap migrasi baru setelah 022 wajib dibuat di kedua folder dengan
+  nomor yang sama** (dijaga `tests/postgres-adapter.test.js`).
+- Tulis SQL aplikasi yang jalan di kedua dialect: `INSERT ... ON CONFLICT (...) DO UPDATE/NOTHING`
+  (bukan `INSERT OR REPLACE/IGNORE`), `CAST(? AS TEXT) IS NULL` untuk parameter opsional, alias
+  untuk subquery, dan `db.transaction()` (bukan `BEGIN`/`COMMIT` manual).
 
 ## Backup
 

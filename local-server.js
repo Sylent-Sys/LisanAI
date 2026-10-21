@@ -6,20 +6,31 @@ const { initDatabase } = require("./server/database");
 const { sendJson } = require("./server/http-utils");
 const { applySecurityHeaders } = require("./server/security-headers");
 const { resolveApiHandlerPath } = require("./server/http/api-routes");
+const { createApiProxy } = require("./server/http/api-proxy");
 const { serveStaticFile } = require("./server/static");
 const pricing = require("./server/ai/pricing");
 
 loadEnv();
 
+// Web-only mode: with API_UPSTREAM_URL set, this process serves the frontend
+// and forwards /api/* to the API server. It needs no database or AI secrets.
+const proxyApi = process.env.API_UPSTREAM_URL ? createApiProxy(process.env.API_UPSTREAM_URL) : null;
+
 // Warm the live OpenRouter price catalog so observability cost estimates use
 // real per-token prices instead of fallback defaults. Non-blocking: a slow or
 // failed catalog refresh must not delay requests.
-pricing.refreshCatalog().catch(() => {});
+if (!proxyApi) pricing.refreshCatalog().catch(() => {});
 
 let isDbInitialized = false;
 
 const requestHandler = async (req, res) => {
   try {
+    if (proxyApi) {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      if (url.pathname.startsWith("/api/")) return proxyApi(req, res);
+      if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
+      return serveStaticFile(res, ROOT, url.pathname);
+    }
     if (!isDbInitialized) {
       await initDatabase();
       isDbInitialized = true;
@@ -62,15 +73,22 @@ if (require.main === module) {
   const host = process.env.HOST || "127.0.0.1";
   const port = Number(process.env.PORT) || PORT;
   const server = http.createServer(requestHandler);
-  initDatabase()
-    .then(() => {
-      server.listen(port, host, () => {
-        console.log(`Lisan.ai running at http://${host}:${port}`);
-        console.log(`Using OpenRouter model: ${process.env.OPENROUTER_MODEL}`);
-      });
-    })
-    .catch((error) => {
-      console.error("Gagal menyiapkan database:", error);
-      process.exit(1);
+  if (proxyApi) {
+    server.listen(port, host, () => {
+      console.log(`Lisan.ai web running at http://${host}:${port}`);
+      console.log(`Proxying /api/* to ${new URL(process.env.API_UPSTREAM_URL).origin}`);
     });
+  } else {
+    initDatabase()
+      .then(() => {
+        server.listen(port, host, () => {
+          console.log(`Lisan.ai running at http://${host}:${port}`);
+          console.log(`Using OpenRouter model: ${process.env.OPENROUTER_MODEL}`);
+        });
+      })
+      .catch((error) => {
+        console.error("Gagal menyiapkan database:", error);
+        process.exit(1);
+      });
+  }
 }
