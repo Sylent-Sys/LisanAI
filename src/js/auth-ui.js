@@ -2,11 +2,9 @@ import { login, registerTenant, logout } from "./api.js";
 import { setButtonLoading } from "./dom.js";
 import { showToast } from "./toast.js";
 import {
-  clearAuthForms,
   closeRegisterModal,
   handleModalKeyboard,
   openRegisterModal,
-  showAuth,
 } from "./app-context.js";
 
 /**
@@ -98,14 +96,9 @@ export function bindAuthEvents(ctx) {
 
   els.logoutButton.addEventListener("click", async () => {
     await logout();
-    ctx.auth = { authenticated: false };
-    ctx.state = { assessments: [], submissions: [], classes: [], memberships: [] };
-    ctx.users = [];
-    ctx.session = null;
-    ctx.features = null;
-    clearAuthForms(ctx);
-    showAuth(ctx);
-    const { refreshSimulatorIfEnabled } = await import("./app-context.js");
-    refreshSimulatorIfEnabled(ctx);
+    // Start the next session on a fresh page: feature listeners are bound once
+    // per page load, and the previous user's rendered data must not stay in
+    // the DOM of a shared classroom computer.
+    window.location.reload();
   });
 }

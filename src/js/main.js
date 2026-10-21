@@ -186,6 +186,15 @@ function bindMobileNavigation(ctx) {
 }
 
 async function bootstrapAuthenticated(ctx, nextAuth) {
+  // Feature modules bind listeners to DOM nodes that live as long as the page.
+  // A second session in the same page (e.g. a simulator account switch) would
+  // bind them again and every form would submit twice, so continue on a fresh
+  // page instead; the new session cookie is already set.
+  if (ctx.sessionBootstrapped) {
+    window.location.reload();
+    return;
+  }
+  ctx.sessionBootstrapped = true;
   try {
     const featuresPromise = loadAuthenticatedFeatures(nextAuth.user.role);
     await bootstrapCoreApp(ctx, nextAuth);
