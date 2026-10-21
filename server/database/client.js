@@ -1,6 +1,5 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { createClient } = require("@libsql/client");
 const { ROOT } = require("../config");
 const { createPostgresDatabase, isPostgresUrl } = require("./postgres");
 
@@ -63,6 +62,9 @@ async function initDatabase() {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
 
+  // Required here, not at the top: a PostgreSQL-only server must not need the
+  // native libSQL binary (on Windows it also needs the Visual C++ runtime).
+  const { createClient } = require("@libsql/client");
   libsqlClient = createClient({ url: databaseUrl, authToken: process.env.TURSO_AUTH_TOKEN });
   db = {
     dialect: "sqlite",

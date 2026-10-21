@@ -51,6 +51,16 @@ test("every SQLite migration after the baseline has a PostgreSQL counterpart", (
   assert.ok(Math.max(...versions(MIGRATIONS_DIR)) <= Math.max(...postgres), "PostgreSQL migrations are behind SQLite");
 });
 
+test("the database client does not load the native libSQL driver until SQLite is used", () => {
+  const { execFileSync } = require("node:child_process");
+  const loaded = execFileSync(process.execPath, [
+    "-e",
+    "require('./server/database'); require('./server/auth-service');" +
+      "process.stdout.write(String(Object.keys(require.cache).some((p) => /[\\\\/]@?libsql[\\\\/]/.test(p))))",
+  ], { cwd: path.join(__dirname, "..") }).toString();
+  assert.equal(loaded, "false");
+});
+
 const postgresUrl = process.env.DATABASE_URL;
 const skipPostgres = isPostgresUrl(postgresUrl) ? false : "set DATABASE_URL to a PostgreSQL test database";
 
